@@ -8,5 +8,8 @@ all : $(EXE)
 clean :
 	rm -f *.o core $(EXE)
 
-$(EXE) : % : %.o
-	$(CC) $(CFLAGS) -o $@ $@.o
+$(EXE) : % : %.o #semaforos.o
+	$(CC) $(CFLAGS) -o $@ $@.o -lm #semaforos.o
+
+#semaforos.o : semaforos.c semaforos.h
+#	$(CC) $(CFLAGS) -c $<
