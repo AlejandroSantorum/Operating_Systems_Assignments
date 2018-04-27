@@ -23,6 +23,7 @@
 #include <ctype.h>
 #include <sys/sem.h>
 #include <sys/ipc.h>
+#include <sys/shm.h>
 
 #define ERROR -1 /*!< Constante con significado de operacion erronea */
 #define OK 0    /*!< Constante con significado de operacion exitosa*/
@@ -55,6 +56,7 @@ int Borrar_Semaforo(int semid);
 *
 * @param key - clave precompartida del semaforo
 * @param size - tamanio del semaforo.
+* @param semid - entero pasado por referencia para alojar el semid del semaforo creado
 * @return int *semid - identificador del semaforo. Int ERROR en caso de error, 1 si el semaforo ya existia, 0 en caso de exito.
 */
 int Crear_Semaforo(key_t key, int size, int *semid);
@@ -77,8 +79,9 @@ int Down_Semaforo(int id, int num_sem, int undo);
 * Su funcionalidad es bajar o decrementar todos los semaforos indicados.
 *
 * @param id - identificador del semaforo
-* @param size - numero de semaforos del array
+* @param size - tamanio del array de ids de los semaforos involucrados(active)
 * @param undo - flag de modo persistente pese a finalizacion abrupta
+* @param active: Semaforos involucrados.
 * @return OK si todo fue correcto, ERROR en caso de error.
 */
 int DownMultiple_Semaforo(int id, int size, int undo, int *active);
@@ -101,8 +104,9 @@ int Up_Semaforo(int id, int num_sem, int undo);
 * Su funcionalidad es subir o incrementar todos los semaforos indicados.
 *
 * @param id - identificador del semaforo
-* @param size - numero de semaforos del array
+* @param size - tamanio del array de ids de los semaforos involucrados(active)
 * @param undo - flag de modo persistente pese a finalizacion abrupta
+* @param active: Semaforos involucrados.
 * @return OK si todo fue correcto, ERROR en caso de error.
 */
 int UpMultiple_Semaforo(int id, int size, int undo, int *active);

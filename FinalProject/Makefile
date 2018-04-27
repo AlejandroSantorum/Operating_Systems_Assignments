@@ -1,6 +1,6 @@
 CC = gcc -ansi -pedantic -std=c99
 CFLAGS = -Wall -g
-EXE = ejercicio2 ejercicio4 ejercicio6a ejercicio6b ejercicio9 prueba
+EXE = proyecto
 
 all : $(EXE)
 
