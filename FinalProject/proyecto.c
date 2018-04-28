@@ -303,6 +303,8 @@ int main(int argc, char **argv){
 void displayer_process(int bettor_process_pid, int betting_manager_process_pid){
     int j, k;
     
+    printf("Abriendo ventanillas e inicilizando apuestas...\n");
+    sleep(2);
     for(j=SECONDS; j>0; j--){
         sleep(1);
         if(Down_Semaforo(semid, MARKET_SEM, 0) == ERROR){
@@ -336,7 +338,9 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid){
 
 void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     pthread_t *thr=NULL;
+    int *window_id=NULL;
     int j;
+    FILE *f=NULL;
     
     /* Inicializamos las apuestas */
     for(j=0; j<n_horses; j++){
@@ -349,14 +353,30 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     }
     /* --------------------- */
     
+    f = (FILE *) fopen("apuestas.txt", "w");
+    if(!f){
+        perror("Error creando un nuevo fichero de apuestas");
+        exit(EXIT_FAILURE);
+    }
+    fclose(f);
+    
+    window_id = (int *) malloc(n_windows*sizeof(int));
+    if(!window_id){
+        perror("Error reservando memoria para el array de ids de las ventanillas");
+        exit(EXIT_FAILURE);
+    }
+    
     thr = (pthread_t*) malloc(n_windows * sizeof(pthread_t));
     if(!thr){
-        printf("Error reservando los hilos en el gestor de apuestas");
+        perror("Error reservando los hilos en el gestor de apuestas");
+        free(window_id);
         exit(EXIT_FAILURE);
     }
     for(j=0; j<n_windows; j++){
-        if(pthread_create(&thr[j], NULL, window_function, (void *) &j)!= 0){
+        window_id[j] = j;
+        if(pthread_create(&thr[j], NULL, window_function, (void *) &window_id[j])!= 0){
             free(thr);
+            free(window_id);
             perror("Error en la creación de los hilos ventanilla");
             exit(EXIT_FAILURE);
         }
@@ -367,6 +387,7 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     for(j=0; j<n_windows; j++){ /* Las ventanillas no recogen mas apuestas */
         pthread_kill(thr[j], SIGINT); /* Finalizamos la ejecucion de los hilos */
     }
+    free(window_id);
     
     exit(EXIT_SUCCESS);
 }
@@ -388,6 +409,7 @@ void bettor_process(int n_horses, int n_bettor, int money){
     msg_arg.mtype = 1;
     while(!flag_bettor){
         for(j=0; j<n_bettor; j++){
+            usleep(200000);
             rand_horse = aleat_num(1, n_horses);
             do{
                 rand_bet = float_rand(0, money);
@@ -433,6 +455,7 @@ void* window_function(void* arg){
     FILE *f=NULL;
     
     while(1){
+        usleep(300000);
         if(msgrcv(msgid, (struct msgbuf *)&rcv, sizeof(rcv.info), 1, 0) == ERROR){
             if(errno == EIDRM || errno == EINTR){ /* Las apuestas han acabado */
                 exit(EXIT_SUCCESS);
@@ -496,7 +519,7 @@ void* window_function(void* arg){
                 Up_Semaforo(semid, FILE_SEM, 0);
                 exit(EXIT_FAILURE);
             }
-            fprintf(f, "%d %d %d %f %f\n", rcv.info.bettor_id, window_id, rcv.info.horse_id, auxiliar_rate, rcv.info.bet);
+            fprintf(f, "%d %d %d %f %f\n", rcv.info.bettor_id, window_id+1, rcv.info.horse_id, auxiliar_rate, rcv.info.bet);
             fclose(f);
             
             if(Up_Semaforo(semid, FILE_SEM, 0) == ERROR){ 
