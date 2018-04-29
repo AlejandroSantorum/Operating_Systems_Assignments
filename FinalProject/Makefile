@@ -1,4 +1,4 @@
-CC = gcc -ansi -pedantic -std=c99
+CC = gcc
 CFLAGS = -Wall -g
 EXE = proyecto
 

@@ -31,16 +31,21 @@
 #define MAX_MONEY 1000000
 #define MIN_MONEY 100
 
-#define PROC_DISPLAYER 0
-#define PROC_MANAGER 1
-#define PROC_BETTOR 2
+#define PROC_MANAGER 0
+#define PROC_BETTOR 1
+#define PROC_DISPLAYER 2
 
 #define SEM_SIZE 3
 #define MARKET_SEM 0
-#define PROFIT_SEM 1
+#define RACECONTROL_SEM 1
 #define FILE_SEM 2
 
+#define FIRST 1
+#define NORMAL 100
+#define LAST -100
+
 #define PATH "/bin/bash"
+#define BETFILE "apuestas.txt"
 #define ERROR -1
 #define SECONDS 30
 #define NAME_SIZE 20
@@ -48,10 +53,16 @@
 struct msgbuf{
     long mtype; /* type of message */
     struct{
-        char name[NAME_SIZE];
-        int bettor_id;
-        int horse_id;
-        float bet;
+        struct{
+            char name[NAME_SIZE];
+            int bettor_id;
+            int horse_id;
+            float bet;
+        }betting;
+        struct{
+            int position;
+            int last_throw;
+        }race;
     }info; /* information of message */
 };
 
@@ -60,6 +71,13 @@ typedef struct{
     float horse_rate[MAX_HORSES];
     float total;
 }market_rates_struct;
+
+typedef struct{
+    int position[MAX_HORSES];
+    int last_throw[MAX_HORSES];
+    int current_box[MAX_HORSES];
+    int horses_done;
+}race_control_struct;
 
 
 void init_syslog(){
@@ -71,24 +89,29 @@ int aleat_num(int inf, int sup);
 float float_rand( float min, float max );
 void* window_function(void* arg);
 void handler_SIGUSR1_bettor(int sig);
-void displayer_process(int bettor_process_pid, int betting_manager_process_pid);
+void handler_SIGUSR2(int sig);
+void displayer_process(int bettor_process_pid, int betting_manager_process_pid, int len_race);
 void betting_manager_process(int n_horses, int n_bettor, int n_windows);
 void bettor_process(int n_horses, int n_bettor, int money);
 void caballo();
+void classification(int *current, int *position, int len);
+int checked(int *array, int len);
+int finished(int *array, int len, int racelen);
 
 
-int semid, msgid, memid_market, memid_profit;
+int semid, msgid, memid_market, memid_race;
 int n_horses;
 int flag_bettor=0;
 market_rates_struct *market_rates=NULL; /* Cotizaciones de los caballos */
-float *profit=NULL; /* Posibles beneficios de cada apostador */
+race_control_struct *race_control=NULL; /* Estructura de control de carrera */
 
 int main(int argc, char **argv){
     int len_race, n_bettor, n_windows, money, n_proc;
     int i, j;
-    int semkey, msgkey, memkey_market, memkey_profit;
+    int semkey, msgkey, memkey_market, memkey_race;
     int *pids=NULL;
     unsigned short ini_sem[SEM_SIZE];
+    void handler_SIGUSR2();
     
     /* Comprobacion inicial de errores */
     if(argc != N_ARGS){
@@ -141,7 +164,11 @@ int main(int argc, char **argv){
     /* Fin de la comprobacion inicial de errores */
     
     n_proc = n_horses+MIN_PROC;
-    srand(time(NULL));
+    
+    if(signal(SIGUSR2, handler_SIGUSR2)==SIG_ERR){
+        perror("Error estableciendo el nuevo manejador de SIGUSR2 en el proceso principal");
+        exit(EXIT_FAILURE);
+    }
     
     /* Array de pids de todos los procesos a crear */
     pids = (int*) malloc(n_proc * sizeof(int));
@@ -223,8 +250,8 @@ int main(int argc, char **argv){
     }
     market_rates->total = 0.0;
     
-    memkey_profit = ftok(PATH, aleat_num(9001, 12000));
-    if(memkey_profit == ERROR){
+    memkey_race = ftok(PATH, aleat_num(9001, 12000));
+    if(memkey_race == ERROR){
         msgctl(msgid, IPC_RMID, NULL); /* Sin comprobacion de error porque precisamente estamos terminando el programa */
         shmdt(market_rates);
         shmctl(memid_market, IPC_RMID, NULL);
@@ -233,8 +260,8 @@ int main(int argc, char **argv){
         perror("Error obteniendo la key para la zona compartida de los beneficios de los apostadores");
         exit(EXIT_FAILURE);
     }
-    memid_profit = shmget(memkey_profit, sizeof(float)*n_bettor, IPC_CREAT|0660);
-    if(memid_profit == ERROR){
+    memid_race = shmget(memkey_race, sizeof(race_control_struct), IPC_CREAT|0660);
+    if(memid_race == ERROR){
         msgctl(msgid, IPC_RMID, NULL); /* Sin comprobacion de error porque precisamente estamos terminando el programa */
         shmdt(market_rates);
         shmctl(memid_market, IPC_RMID, NULL);
@@ -243,12 +270,12 @@ int main(int argc, char **argv){
         perror("Error creando la memoria compartida para los beneficios de los apostadores");
         exit(EXIT_FAILURE);
     }
-    profit = (float *) shmat(memid_profit, (char*)0, 0);
-    if(profit == ((void*)ERROR)){
+    race_control = (race_control_struct *) shmat(memid_race, (char*)0, 0);
+    if(race_control == ((void*)ERROR)){
         msgctl(msgid, IPC_RMID, NULL); /* Sin comprobacion de error porque precisamente estamos terminando el programa */
         shmdt(market_rates);
         shmctl(memid_market, IPC_RMID, NULL);
-        shmctl(memid_profit, IPC_RMID, NULL);
+        shmctl(memid_race, IPC_RMID, NULL);
         Borrar_Semaforo(semid);
         free(pids);
         perror("Error creando la memoria compartida para los beneficios de los apostadores");
@@ -257,16 +284,13 @@ int main(int argc, char **argv){
     /* FIN CREACION MEMORIA COMPARTIDA */
     
     
-    
-    
-    
     for(i=0; i<n_proc; i++){
         if((pids[i] = fork())==ERROR){
             msgctl(msgid, IPC_RMID, NULL); /* Sin comprobacion de error porque precisamente estamos terminando el programa */
             shmdt(market_rates);
             shmctl(memid_market, IPC_RMID, NULL);
-            shmdt(profit);
-            shmctl(memid_profit, IPC_RMID, NULL);
+            shmdt(race_control);
+            shmctl(memid_race, IPC_RMID, NULL);
             Borrar_Semaforo(semid);
             free(pids);
             perror("Error al realizar fork");
@@ -278,30 +302,91 @@ int main(int argc, char **argv){
     }
     
     if(i==PROC_DISPLAYER){
-        displayer_process(pids[PROC_BETTOR], pids[PROC_MANAGER]);
+        displayer_process(pids[PROC_BETTOR], pids[PROC_MANAGER], len_race);
     }else if(i==PROC_MANAGER){
         betting_manager_process(n_horses, n_bettor, n_windows);
     }else if(i==PROC_BETTOR){
         bettor_process(n_horses, n_bettor, money);
-    }else if(i>PROC_BETTOR && i<n_proc){
-        caballo();
+    }else if(i>PROC_DISPLAYER && i<n_proc){
+        caballo(i-PROC_DISPLAYER);
     }else{/* Proceso padre*/
-        pause();
+        pause(); /* Espera a que el periodo de apuestas finalice */
+        signal(SIGUSR2, handler_SIGUSR2);
     }
     
-    msgctl(msgid, IPC_RMID, NULL);
-    shmdt(market_rates);
-    shmctl(memid_market, IPC_RMID, NULL);
-    shmdt(profit);
-    shmctl(memid_profit, IPC_RMID, NULL);
+    if(msgctl(msgid, IPC_RMID, NULL) == ERROR){
+        perror("Advertencia: no se ha podido eliminar la cola de mensajes de las cotizaciones");
+    }
+    if(shmdt(market_rates) == ERROR){
+        perror("Advertencia: no se ha podido desadjuntar la zona de memoria compartida para las cotizaciones");
+    }
+    if(shmctl(memid_market, IPC_RMID, NULL) == ERROR){
+        perror("Advertencia: no se ha podido eliminar la zona de memoria compartida de las cotizaciones");
+    }
+        
+    for(j=0; j<n_horses; j++){
+        race_control->position[j] = 0;
+        race_control->last_throw[j] = 0;
+        race_control->current_box[j] = 0;
+        race_control->horses_done = 0;
+    }
+    
+    while(1){
+        /* Comprobamos si la carrera ha terminado */
+        if(finished(race_control->current_box, n_horses, len_race)){
+            break;
+        }
+        
+        /* Avisamos al proceso monitor que muestre el estado actual de la carrera */
+        kill(pids[PROC_DISPLAYER], SIGUSR2);
+        pause();
+        signal(SIGUSR2, handler_SIGUSR2);
+        
+        for(j=PROC_DISPLAYER+1; j<n_proc; j++){
+            kill(pids[j], SIGUSR2);
+        }
+        
+        pause();
+        signal(SIGUSR2, handler_SIGUSR2);
+        
+        if(Down_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
+            perror("Error bajando el semaforo de control de carrera en el proceso principal");
+            Borrar_Semaforo(semid);
+            exit(EXIT_FAILURE);
+        }
+        
+        race_control->horses_done = 0;
+        classification(race_control->current_box, race_control->position, n_horses);
+        
+        if(Up_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
+            perror("Error levantando el semaforo de control de carrera en el proceso principal");
+            Borrar_Semaforo(semid);
+            exit(EXIT_FAILURE);
+        }
+    }
+    
+    /* Avisamos al proceso monitor de que muestre toda la informacion de final de carrera */
+    kill(pids[PROC_DISPLAYER], SIGUSR2);
+    
+    for(j=PROC_DISPLAYER+1; j<n_proc; j++){
+        kill(pids[j], SIGINT); /* Finalizamos los caballos */
+    }
+    
+    while(wait(NULL)>0);
+    
+    shmdt(race_control);
+    shmctl(memid_race, IPC_RMID, NULL);
     Borrar_Semaforo(semid);
     free(pids);
     exit(EXIT_SUCCESS);
 }
 
 
-void displayer_process(int bettor_process_pid, int betting_manager_process_pid){
+void displayer_process(int bettor_process_pid, int betting_manager_process_pid, int len_race){
+    void handler_SIGUSR2();
     int j, k;
+    
+    srand(time(NULL) + getpid());
     
     printf("Abriendo ventanillas e inicilizando apuestas...\n");
     sleep(2);
@@ -324,14 +409,65 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid){
         }
     }
     
-    kill(bettor_process_pid, SIGUSR1);
-    kill(betting_manager_process_pid, SIGUSR1);
+    kill(bettor_process_pid, SIGINT);
+    kill(betting_manager_process_pid, SIGUSR2);
     sleep(1); /* Ayuda a la sincronizacion */
     printf("\n\t ======================================\n");
     printf("APUESTAS FINALIZADAS. La carrera comenzara en breves instantes");
     printf("\n\t ======================================\n");
     
-    kill(getppid(), SIGUSR1);
+    kill(getppid(), SIGUSR2); /* Avisa al proceso principal de que las apuestas han finalizado */
+        
+    while(1){
+        pause(); /* Espera a la señal del proceso principal */
+        signal(SIGUSR2, handler_SIGUSR2);
+        
+        if(Down_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
+            perror("Error bajando el semaforo de control de carrera en el monitor");
+            Borrar_Semaforo(semid);
+            exit(EXIT_FAILURE);
+        }
+        if(finished(race_control->current_box, n_horses, len_race)){
+            if(Up_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
+                perror("Error subiendo el semaforo de control de carrera en el monitor en el break");
+                Borrar_Semaforo(semid);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        }
+        
+        printf("\tEstado actual de la carrera:\n");
+        for(j=0; j<n_horses; j++){
+            if(race_control->position[j]!=LAST){
+                printf("Caballo nº %d en la %dª posicion (casilla nº %d)\n", j+1, race_control->position[j], race_control->current_box[j]);
+            }else{
+                printf("Caballo nº %d en la ultima posicion (casilla nº %d)\n", j+1, race_control->current_box[j]);
+            }
+        }
+        
+        if(Up_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
+            perror("Error subiendo el semaforo de control de carrera en el monitor");
+            Borrar_Semaforo(semid);
+            exit(EXIT_FAILURE);
+        }
+        
+        kill(getppid(), SIGUSR2);
+    }
+    
+    printf("\n\t ======================================\n");
+    printf("¡CARRERA FINALIZADA!: espere unos instantes mientras calculamos los resultados...");
+    printf("\n\t ======================================\n");
+    sleep(2);
+    for(j=0; j<n_horses; j++){
+        if(race_control->position[j] == FIRST){
+            printf("El caballo %d ha GANADO LA CARRERA\n", j+1);
+        }else if(race_control->position[j] == LAST){
+            printf("El caballo %d ha terminado ultimo\n", j+1);
+        }else{
+            printf("El caballo %d ha terminado en %dª posicion\n", j+1, race_control->position[j]);
+        }
+    }
+    
     exit(EXIT_SUCCESS);
 }
 
@@ -342,18 +478,17 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     int j;
     FILE *f=NULL;
     
+    srand(time(NULL) + getpid());
+    
     /* Inicializamos las apuestas */
     for(j=0; j<n_horses; j++){
         market_rates->horse_bet[j] = 1.0;
         market_rates->total += 1.0;
         market_rates->horse_rate[j] = market_rates->total/market_rates->horse_bet[j];
     }
-    for(j=0; j<n_bettor; j++){
-        profit[j] = 0.0;
-    }
     /* --------------------- */
     
-    f = (FILE *) fopen("apuestas.txt", "w");
+    f = (FILE *) fopen(BETFILE, "w");
     if(!f){
         perror("Error creando un nuevo fichero de apuestas");
         exit(EXIT_FAILURE);
@@ -401,6 +536,8 @@ void bettor_process(int n_horses, int n_bettor, int money){
     int j;
     char aux[NAME_SIZE];
     
+    srand(time(NULL) + getpid());
+    
     if(signal(SIGUSR1, handler_SIGUSR1_bettor)==SIG_ERR){
         perror("Error estableciendo el nuevo manejador de SIGUSR1 en el proceso apostador");
         exit(EXIT_FAILURE);
@@ -414,12 +551,12 @@ void bettor_process(int n_horses, int n_bettor, int money){
             do{
                 rand_bet = float_rand(0, money);
             }while(rand_bet == 0.0);
-            strcpy(msg_arg.info.name, "Apostador-");
+            strcpy(msg_arg.info.betting.name, "Apostador-");
             sprintf(aux, "%d", j+1);
-            strcpy(msg_arg.info.name, aux);
-            msg_arg.info.bettor_id = j+1;
-            msg_arg.info.horse_id = rand_horse;
-            msg_arg.info.bet = rand_bet;
+            strcpy(msg_arg.info.betting.name, aux);
+            msg_arg.info.betting.bettor_id = j+1;
+            msg_arg.info.betting.horse_id = rand_horse;
+            msg_arg.info.betting.bet = rand_bet;
             if(msgsnd(msgid, (struct msgbuf *)&msg_arg, sizeof(msg_arg.info), 0) == ERROR){
                 if(errno!=EIDRM && errno!=EINTR){
                     /* msgsnd puede devolver error si el proceso recibe una señal
@@ -430,14 +567,52 @@ void bettor_process(int n_horses, int n_bettor, int money){
                 }
                 
             }
-            memset(msg_arg.info.name, 0, sizeof(msg_arg.info.name));
+            memset(msg_arg.info.betting.name, 0, sizeof(msg_arg.info.betting.name));
         }
     }
     exit(EXIT_SUCCESS);
 }
 
-void caballo(){
-    /* ..... */
+void caballo(int id){
+    int the_throw=-1, last1, last2;
+    
+    srand(time(NULL) + getpid());
+    
+    pause(); /* Esperamos al inicio de la carrera */
+    signal(SIGUSR2, handler_SIGUSR2);
+    
+    while(1){
+        if(Down_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
+            perror("Error bajando el semaforo de control de carrera en un caballo");
+            Borrar_Semaforo(semid);
+            exit(EXIT_FAILURE);
+        }
+        
+        if(race_control->position[id-1] == LAST){
+            last1 = aleat_num(1, 6);
+            last2 = aleat_num(1, 6);
+            the_throw = last1+last2;
+        }else if(race_control->position[id-1] == FIRST){
+            the_throw = aleat_num(1, 7);
+        }else{
+            the_throw = aleat_num(1, 6);
+        }
+        
+        race_control->current_box[id-1] += the_throw;
+        race_control->last_throw[id-1] = the_throw;
+        race_control->horses_done++;
+        if(race_control->horses_done == n_horses){
+            kill(getppid(), SIGUSR2);
+        }
+        
+        if(Up_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
+            perror("Error levantando el semaforo de control de carrera en un caballo");
+            Borrar_Semaforo(semid);
+            exit(EXIT_FAILURE);
+        }
+        pause();
+        signal(SIGUSR2, handler_SIGUSR2);
+    }
     exit(EXIT_SUCCESS);
 }
 
@@ -446,6 +621,9 @@ void handler_SIGUSR1_bettor(int sig){
     return;
 }
 
+void handler_SIGUSR2(int sig){
+    return;
+}
 
 void* window_function(void* arg){
     int window_id = *((int*)arg);
@@ -453,6 +631,8 @@ void* window_function(void* arg){
     int j;
     float auxiliar_rate;
     FILE *f=NULL;
+    
+    srand(time(NULL) + getpid());
     
     while(1){
         usleep(300000);
@@ -466,14 +646,7 @@ void* window_function(void* arg){
         }
         
         /* Comprobamos el caballo y hacemos las actualizaciones necesarias */
-        if(rcv.info.horse_id > 0 && rcv.info.horse_id <= n_horses){
-            /* Bajando semaforo de proteccion de memoria compartida
-             *  para las posibles ganancias de los apostadores */
-            if(Down_Semaforo(semid, PROFIT_SEM, 0) == ERROR){ 
-                printf("Error bajando el semaforo de los apostadores en una ventanilla.\n");
-                Borrar_Semaforo(semid);
-                exit(EXIT_FAILURE);
-            }
+        if(rcv.info.betting.horse_id > 0 && rcv.info.betting.horse_id <= n_horses){
             /* Bajando semaforo de proteccion de memoria compartida
              *  para las cotizaciones de los caballos */
             if(Down_Semaforo(semid, MARKET_SEM, 0) == ERROR){ 
@@ -482,24 +655,16 @@ void* window_function(void* arg){
                 exit(EXIT_FAILURE);
             }
             
-            /* Actualizamos beneficios del apostador */
-            /* beneficio = apuesta*cotizacion_caballo */
-            auxiliar_rate = market_rates->horse_rate[rcv.info.horse_id-1];
-            profit[rcv.info.bettor_id-1] = rcv.info.bet * auxiliar_rate;
+            auxiliar_rate = market_rates->horse_rate[rcv.info.betting.horse_id-1];
             /* Actualizamos cotizaciones de cada caballo */
-            market_rates->horse_bet[rcv.info.horse_id-1] += rcv.info.bet;
-            market_rates->total += rcv.info.bet;
+            market_rates->horse_bet[rcv.info.betting.horse_id-1] += rcv.info.betting.bet;
+            market_rates->total += rcv.info.betting.bet;
             for(j=0; j<n_horses; j++){
                 market_rates->horse_rate[j] = market_rates->total / market_rates->horse_bet[j];
             }
             
             if(Up_Semaforo(semid, MARKET_SEM, 0) == ERROR){ 
                 perror("Error subiendo el semaforo de las cotizaciones en una ventanilla.");
-                Borrar_Semaforo(semid);
-                exit(EXIT_FAILURE);
-            }
-            if(Up_Semaforo(semid, PROFIT_SEM, 0) == ERROR){ 
-                perror("Error subiendo el semaforo de los apostadores en una ventanilla.");
                 Borrar_Semaforo(semid);
                 exit(EXIT_FAILURE);
             }
@@ -513,13 +678,13 @@ void* window_function(void* arg){
                 exit(EXIT_FAILURE);
             }
             
-            f = (FILE*) fopen("apuestas.txt", "a");
+            f = (FILE*) fopen(BETFILE, "a");
             if(!f){
                 perror("Error abriendo el fichero de registro de apuestas en una ventanilla");
                 Up_Semaforo(semid, FILE_SEM, 0);
                 exit(EXIT_FAILURE);
             }
-            fprintf(f, "%d %d %d %f %f\n", rcv.info.bettor_id, window_id+1, rcv.info.horse_id, auxiliar_rate, rcv.info.bet);
+            fprintf(f, "%d %d %d %f %f\n", rcv.info.betting.bettor_id, window_id+1, rcv.info.betting.horse_id, auxiliar_rate, rcv.info.betting.bet);
             fclose(f);
             
             if(Up_Semaforo(semid, FILE_SEM, 0) == ERROR){ 
@@ -530,6 +695,84 @@ void* window_function(void* arg){
         }
     }
     return NULL;
+}
+
+
+void classification(int *current, int *position, int len){
+    int *aux=NULL;
+    int i,j, flag=0;
+    int tmp;
+    
+    for(i=1; i<len; i++){
+        if(current[i] != current[i-1]){
+            flag = 1;
+            break;
+        } 
+    }
+    if(!flag){
+        for(j=0; j<len; j++){
+            position[j] = FIRST;
+        }
+        return;
+    }
+    
+    aux = (int*) malloc(len*sizeof(int));
+    if(!aux){
+        perror("Error al reservar el array auxiliar a la hora de actualizar la clasificacion");
+        exit(EXIT_FAILURE);
+    }
+    
+    for(i=0; i<len; i++){
+        aux[i] = current[i];
+    }
+    
+    i=FIRST;
+    while(!checked(aux, len)){
+        tmp = aux[0];
+        for(j=1; j<len; j++){
+            if(aux[j] > tmp) {
+                tmp = aux[j];
+            }
+        }
+        for(j=0; j<len; j++){
+            if(current[j] == tmp){
+                position[j] = i;
+                aux[j] = -1;
+            }
+        }
+        i++;
+    }
+    tmp = position[0];
+    for(j=1; j<len; j++){
+        if(position[j]>tmp){
+            tmp = position[j];
+        } 
+    }
+    
+    for(j=0; j<len; j++){
+        if(position[j] == tmp){
+            position[j] = LAST;
+        }
+    }
+    
+    
+    free(aux);
+}
+
+int checked(int *array, int len){
+    int i;
+    for(i=0; i<len; i++){
+        if(array[i]!=-1) return 0;
+    }
+    return 1;
+}
+
+int finished(int *array, int len, int racelen){
+    int i;
+    for(i=0; i<len; i++){
+        if(array[i] >= racelen) return 1;
+    }
+    return 0;
 }
 
 
@@ -570,6 +813,7 @@ int aleat_num(int inf, int sup){
 
     return result;
 }
+
 
 float float_rand( float min, float max ){
     float scale = rand() / (float) RAND_MAX; /* [0, 1.0] */
