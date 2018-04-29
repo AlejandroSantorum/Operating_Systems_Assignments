@@ -94,9 +94,10 @@ int Down_Semaforo(int id, int num_sem, int undo){
 
 
 int DownMultiple_Semaforo(int id, int size, int undo, int *active){
+  int i;
    struct sembuf sops[size];
 
-   for(int i=0; i < size; i++){
+   for(i=0; i < size; i++){
      sops[i].sem_num = active[i];
      sops[i].sem_op = -1;
      sops[i].sem_flg = undo;
@@ -131,9 +132,10 @@ int Up_Semaforo(int id, int num_sem, int undo){
 
 
 int UpMultiple_Semaforo(int id, int size, int undo, int *active){
+  int i;
   struct sembuf sops[size];
 
-  for(int i=0; i < size; i++){
+  for(i=0; i < size; i++){
     sops[i].sem_num = active[i];
     sops[i].sem_op = 1;
     sops[i].sem_flg = undo;

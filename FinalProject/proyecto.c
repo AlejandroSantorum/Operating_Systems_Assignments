@@ -460,11 +460,11 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
     sleep(2);
     for(j=0; j<n_horses; j++){
         if(race_control->position[j] == FIRST){
-            printf("El caballo %d ha GANADO LA CARRERA\n", j+1);
+            printf("El caballo %d ha GANADO LA CARRERA (casilla final = %d)\n", j+1, race_control->current_box[j]);
         }else if(race_control->position[j] == LAST){
-            printf("El caballo %d ha terminado ultimo\n", j+1);
+            printf("El caballo %d ha terminado ultimo (casilla final = %d)\n", j+1, race_control->current_box[j]);
         }else{
-            printf("El caballo %d ha terminado en %dª posicion\n", j+1, race_control->position[j]);
+            printf("El caballo %d ha terminado en %dª posicion (casilla final = %d)\n", j+1, race_control->position[j], race_control->current_box[j]);
         }
     }
     
@@ -493,6 +493,7 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
         perror("Error creando un nuevo fichero de apuestas");
         exit(EXIT_FAILURE);
     }
+    fprintf(f, "Apostador_ID   N_Ventanilla   Caballo_ID   Cotizacion   Cantidad\n");
     fclose(f);
     
     window_id = (int *) malloc(n_windows*sizeof(int));
@@ -531,9 +532,8 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
 void bettor_process(int n_horses, int n_bettor, int money){
     struct msgbuf msg_arg={0};
     void handler_SIGUSR1_bettor();
-    int rand_horse;
+    int rand_horse, rand_bettor;
     float rand_bet;
-    int j;
     char aux[NAME_SIZE];
     
     srand(time(NULL) + getpid());
@@ -545,30 +545,29 @@ void bettor_process(int n_horses, int n_bettor, int money){
     
     msg_arg.mtype = 1;
     while(!flag_bettor){
-        for(j=0; j<n_bettor; j++){
-            usleep(200000);
-            rand_horse = aleat_num(1, n_horses);
-            do{
-                rand_bet = float_rand(0, money);
-            }while(rand_bet == 0.0);
-            strcpy(msg_arg.info.betting.name, "Apostador-");
-            sprintf(aux, "%d", j+1);
-            strcpy(msg_arg.info.betting.name, aux);
-            msg_arg.info.betting.bettor_id = j+1;
-            msg_arg.info.betting.horse_id = rand_horse;
-            msg_arg.info.betting.bet = rand_bet;
-            if(msgsnd(msgid, (struct msgbuf *)&msg_arg, sizeof(msg_arg.info), 0) == ERROR){
-                if(errno!=EIDRM && errno!=EINTR){
-                    /* msgsnd puede devolver error si el proceso recibe una señal
-                     * del sistema o si la cola de mensajes es eliminada, lo cual
-                     * no es un error que deba ser reportado y subsanado */
-                    perror("Error enviando mensaje desde el proceso apostador\n");
-                    exit(EXIT_FAILURE);
-                }
-                
+        usleep(200000);
+        rand_horse = aleat_num(1, n_horses);
+        rand_bettor = aleat_num(1, n_bettor);
+        do{
+            rand_bet = float_rand(0, money);
+        }while(rand_bet == 0.0);
+        strcpy(msg_arg.info.betting.name, "Apostador-");
+        sprintf(aux, "%d", rand_bettor);
+        strcpy(msg_arg.info.betting.name, aux);
+        msg_arg.info.betting.bettor_id = rand_bettor;
+        msg_arg.info.betting.horse_id = rand_horse;
+        msg_arg.info.betting.bet = rand_bet;
+        if(msgsnd(msgid, (struct msgbuf *)&msg_arg, sizeof(msg_arg.info), 0) == ERROR){
+            if(errno!=EIDRM && errno!=EINTR){
+                /* msgsnd puede devolver error si el proceso recibe una señal
+                 * del sistema o si la cola de mensajes es eliminada, lo cual
+                 * no es un error que deba ser reportado y subsanado */
+                perror("Error enviando mensaje desde el proceso apostador\n");
+                exit(EXIT_FAILURE);
             }
-            memset(msg_arg.info.betting.name, 0, sizeof(msg_arg.info.betting.name));
+            
         }
+        memset(msg_arg.info.betting.name, 0, sizeof(msg_arg.info.betting.name));
     }
     exit(EXIT_SUCCESS);
 }
