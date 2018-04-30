@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <time.h>
 #include <signal.h>
+#include <limits.h>
 #include <ctype.h>
 #include <pthread.h>
 #include <sys/sem.h>
@@ -25,7 +26,7 @@
 #define MAX_RACE 200
 #define MIN_RACE 20
 #define MAX_BETTOR 100
-#define MIN_BETTOR 1
+#define MIN_BETTOR 10
 #define MAX_WINDOWS 30
 #define MIN_WINDOWS 1
 #define MAX_MONEY 1000000
@@ -46,9 +47,12 @@
 
 #define PATH "/bin/bash"
 #define BETFILE "apuestas.txt"
+#define BETTORFILE "resultados_apostadores.txt"
 #define ERROR -1
 #define SECONDS 30
 #define NAME_SIZE 20
+#define BUFFER_SIZE 128
+#define N_BEST_BETTOR 10
 
 struct msgbuf{
     long mtype; /* type of message */
@@ -90,37 +94,40 @@ float float_rand( float min, float max );
 void* window_function(void* arg);
 void handler_SIGUSR1_bettor(int sig);
 void handler_SIGUSR2(int sig);
-void displayer_process(int bettor_process_pid, int betting_manager_process_pid, int len_race);
+void displayer_process(int bettor_process_pid, int betting_manager_process_pid, int len_race, int n_bettor);
 void betting_manager_process(int n_horses, int n_bettor, int n_windows);
 void bettor_process(int n_horses, int n_bettor, int money);
 void caballo();
 void classification(int *current, int *position, int len);
 int checked(int *array, int len);
 int finished(int *array, int len, int racelen);
+void calculate_bet_results(int *winners, int n_winners, int n_bettor);
+void print_best_bettors(int n_bettor);
 
 
 int semid, msgid, memid_market, memid_race;
-int n_horses;
+int n_horses, n_proc;
 int flag_bettor=0;
+int *pids=NULL;
 market_rates_struct *market_rates=NULL; /* Cotizaciones de los caballos */
 race_control_struct *race_control=NULL; /* Estructura de control de carrera */
 
 int main(int argc, char **argv){
-    int len_race, n_bettor, n_windows, money, n_proc;
+    int len_race, n_bettor, n_windows, money;
     int i, j;
     int semkey, msgkey, memkey_market, memkey_race;
-    int *pids=NULL;
     unsigned short ini_sem[SEM_SIZE];
     void handler_SIGUSR2();
+    void handler_SIGINT();
     
     /* Comprobacion inicial de errores */
     if(argc != N_ARGS){
         printf("Argumentos que se deben especificar:\n");
-        printf("-Numero de caballos de la carrera(max 10)\n");
-        printf("-Longitud de la carrera\n");
-        printf("-Numero de apostadores(max 100)\n");
-        printf("-Numero de ventanillas\n");
-        printf("-Dinero de cada apostante\n");
+        printf("-Numero de caballos de la carrera(min=%d, max=%d)\n", MIN_HORSES, MAX_HORSES);
+        printf("-Longitud de la carrera(min=%d, max=%d)\n", MIN_RACE, MAX_RACE);
+        printf("-Numero de apostadores(min=%d, max=%d)\n", MIN_BETTOR, MAX_BETTOR);
+        printf("-Numero de ventanillas(min=%d, max=%d)\n", MIN_WINDOWS, MAX_WINDOWS);
+        printf("-Dinero de cada apostante(min=%d, max=%d)\n", MIN_MONEY, MAX_MONEY);
         exit(EXIT_FAILURE);
     }
     
@@ -302,7 +309,7 @@ int main(int argc, char **argv){
     }
     
     if(i==PROC_DISPLAYER){
-        displayer_process(pids[PROC_BETTOR], pids[PROC_MANAGER], len_race);
+        displayer_process(pids[PROC_BETTOR], pids[PROC_MANAGER], len_race, n_bettor);
     }else if(i==PROC_MANAGER){
         betting_manager_process(n_horses, n_bettor, n_windows);
     }else if(i==PROC_BETTOR){
@@ -310,8 +317,11 @@ int main(int argc, char **argv){
     }else if(i>PROC_DISPLAYER && i<n_proc){
         caballo(i-PROC_DISPLAYER);
     }else{/* Proceso padre*/
+        if(signal(SIGINT, handler_SIGINT)==SIG_ERR){
+            perror("Error estableciendo el nuevo manejador de SIGINT en el proceso principal");
+            exit(EXIT_FAILURE);
+        }
         pause(); /* Espera a que el periodo de apuestas finalice */
-        signal(SIGUSR2, handler_SIGUSR2);
     }
     
     if(msgctl(msgid, IPC_RMID, NULL) == ERROR){
@@ -340,14 +350,12 @@ int main(int argc, char **argv){
         /* Avisamos al proceso monitor que muestre el estado actual de la carrera */
         kill(pids[PROC_DISPLAYER], SIGUSR2);
         pause();
-        signal(SIGUSR2, handler_SIGUSR2);
         
         for(j=PROC_DISPLAYER+1; j<n_proc; j++){
             kill(pids[j], SIGUSR2);
         }
         
         pause();
-        signal(SIGUSR2, handler_SIGUSR2);
         
         if(Down_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
             perror("Error bajando el semaforo de control de carrera en el proceso principal");
@@ -382,9 +390,10 @@ int main(int argc, char **argv){
 }
 
 
-void displayer_process(int bettor_process_pid, int betting_manager_process_pid, int len_race){
+void displayer_process(int bettor_process_pid, int betting_manager_process_pid, int len_race, int n_bettor){
     void handler_SIGUSR2();
     int j, k;
+    int *winners=NULL;
     
     srand(time(NULL) + getpid());
     
@@ -420,7 +429,6 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
         
     while(1){
         pause(); /* Espera a la señal del proceso principal */
-        signal(SIGUSR2, handler_SIGUSR2);
         
         if(Down_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
             perror("Error bajando el semaforo de control de carrera en el monitor");
@@ -457,10 +465,20 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
     printf("\n\t ======================================\n");
     printf("¡CARRERA FINALIZADA!: espere unos instantes mientras calculamos los resultados...");
     printf("\n\t ======================================\n");
-    sleep(2);
-    for(j=0; j<n_horses; j++){
+    
+    sleep(2); /* Csmbiar por 15? */
+    
+    winners = (int*) malloc(n_horses * sizeof(int));
+    if(!winners){
+        perror("Error al reservar memoria para la lista de ganadores");
+        exit(EXIT_SUCCESS);
+    }
+    
+    for(j=0, k=0; j<n_horses; j++){
         if(race_control->position[j] == FIRST){
             printf("El caballo %d ha GANADO LA CARRERA (casilla final = %d)\n", j+1, race_control->current_box[j]);
+            winners[k] = j+1;
+            k++;
         }else if(race_control->position[j] == LAST){
             printf("El caballo %d ha terminado ultimo (casilla final = %d)\n", j+1, race_control->current_box[j]);
         }else{
@@ -468,6 +486,10 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
         }
     }
     
+    calculate_bet_results(winners, k, n_bettor);
+    print_best_bettors(n_bettor);
+    
+    free(winners);
     exit(EXIT_SUCCESS);
 }
 
@@ -553,7 +575,7 @@ void bettor_process(int n_horses, int n_bettor, int money){
         }while(rand_bet == 0.0);
         strcpy(msg_arg.info.betting.name, "Apostador-");
         sprintf(aux, "%d", rand_bettor);
-        strcpy(msg_arg.info.betting.name, aux);
+        strcat(msg_arg.info.betting.name, aux);
         msg_arg.info.betting.bettor_id = rand_bettor;
         msg_arg.info.betting.horse_id = rand_horse;
         msg_arg.info.betting.bet = rand_bet;
@@ -578,7 +600,6 @@ void caballo(int id){
     srand(time(NULL) + getpid());
     
     pause(); /* Esperamos al inicio de la carrera */
-    signal(SIGUSR2, handler_SIGUSR2);
     
     while(1){
         if(Down_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
@@ -610,7 +631,6 @@ void caballo(int id){
             exit(EXIT_FAILURE);
         }
         pause();
-        signal(SIGUSR2, handler_SIGUSR2);
     }
     exit(EXIT_SUCCESS);
 }
@@ -622,6 +642,21 @@ void handler_SIGUSR1_bettor(int sig){
 
 void handler_SIGUSR2(int sig){
     return;
+}
+
+void handler_SIGINT(int sig){
+    int k;
+    for(k=0; k<n_proc; k++){
+        kill(pids[k], SIGINT);
+    }
+    msgctl(msgid, IPC_RMID, NULL);
+    shmdt(market_rates);
+    shmctl(memid_market, IPC_RMID, NULL);
+    shmdt(race_control);
+    shmctl(memid_race, IPC_RMID, NULL);
+    Borrar_Semaforo(semid);
+    free(pids);
+    exit(EXIT_SUCCESS);
 }
 
 void* window_function(void* arg){
@@ -753,8 +788,6 @@ void classification(int *current, int *position, int len){
             position[j] = LAST;
         }
     }
-    
-    
     free(aux);
 }
 
@@ -772,6 +805,135 @@ int finished(int *array, int len, int racelen){
         if(array[i] >= racelen) return 1;
     }
     return 0;
+}
+
+
+void calculate_bet_results(int *winners, int n_winners, int n_bettor){
+    FILE *fbets=NULL, *fbettors=NULL;
+    int i, current_bettor;
+    float total_bet, total_won, profit;
+    char buffer[BUFFER_SIZE], name[NAME_SIZE], aux[NAME_SIZE];
+    int bettor_id, window_id, horse_id;
+    float price, amount_bet;
+    
+    
+    fbettors = (FILE *) fopen(BETTORFILE, "w");
+    if(!fbettors){
+        perror("Error abriendo el fichero de resultados de los apostadores");
+        fclose(fbets);
+        exit(EXIT_FAILURE);
+    }
+    fprintf(fbettors, "Nombre_Apostador  Cantidad_Total_Apostada  Ganancias_Totales  Beneficios_Netos\n");
+    
+    for(current_bettor=1; current_bettor<=n_bettor; current_bettor++){
+        total_bet=0;
+        total_won=0;
+        
+        fbets = (FILE *) fopen(BETFILE, "r");
+        if(!fbets){
+            perror("Error abriendo el fichero de apuestas para mostrar los mejores apostadores");
+            exit(EXIT_FAILURE);
+        }
+    
+        fgets(buffer, BUFFER_SIZE, fbets);
+        while(!feof(fbets)){
+            fgets(buffer, BUFFER_SIZE, fbets);
+            sscanf(buffer, "%d %d %d %f %f\n", &bettor_id, &window_id, &horse_id, &price, &amount_bet);
+            if(bettor_id == current_bettor){
+                total_bet += amount_bet;
+                for(i=0; i<n_winners; i++){
+                    if(winners[i] == horse_id){
+                        total_won += (amount_bet * price);
+                    }
+                }
+            }
+        }
+        profit = total_won - total_bet;
+        memset(name, 0, NAME_SIZE);
+        strcpy(name, "Apostador-");
+        sprintf(aux, "%d", current_bettor);
+        strcat(name, aux);
+        fprintf(fbettors, "%s %f %f %f\n", name, total_bet, total_won, profit);
+        fclose(fbets);
+    }
+    
+    fclose(fbettors);
+}
+
+
+void print_best_bettors(int n_bettor){
+    FILE *fbettors=NULL;
+    int *profits = NULL;
+    char **names=NULL;
+    char buffer[BUFFER_SIZE], name[NAME_SIZE], best_name[NAME_SIZE];
+    int j, k;
+    float best_profit, bet_amount, won_amount, profit;
+    
+    profits = (int*) malloc(n_bettor*sizeof(int));
+    if(!profits){
+        perror("Error reservando memoria para los mejores beneficios");
+        exit(EXIT_FAILURE);
+    }
+    names = (char **) malloc(n_bettor*sizeof(char *));
+    if(!names){
+        perror("Error reservando memoria para los nombres de los mejores apostadores");
+        free(profits);
+        exit(EXIT_FAILURE);
+    }
+    for(j=0; j<n_bettor; j++){
+        names[j] = (char *) malloc(NAME_SIZE * sizeof(char));
+        if(!names[j]){
+            perror("Error reservando memoria para el nombre");
+            for(k=0; k<j; k++){
+                free(names[k]);
+            }
+            free(names);
+            free(profits);
+            exit(EXIT_FAILURE);
+        }
+    }
+    
+    fbettors = (FILE *) fopen(BETTORFILE, "r");
+    if(!fbettors){
+        perror("Error abriendo el fichero de resultados de los apostadores para mostrar a los mejores");
+        exit(EXIT_FAILURE);
+    }
+    fgets(buffer, BUFFER_SIZE, fbettors);
+    j=0;
+    while(j<n_bettor){
+        fgets(buffer, BUFFER_SIZE, fbettors);
+        sscanf(buffer, "%s %f %f %f", name, &bet_amount, &won_amount, &profit);
+        profits[j] = profit;
+        memset(names[j], 0, NAME_SIZE);
+        strcpy(names[j], name);
+        j++;
+    }
+    fclose(fbettors);
+    
+    printf("\n\t--> LISTA DE MEJORES APOSTADORES:\n");
+    
+    for(j=0; j<N_BEST_BETTOR; j++){
+        strcpy(best_name, names[0]);
+        best_profit = profits[0];
+        for(k=1; k<n_bettor; k++){
+            if(profits[k] > best_profit){
+                best_profit = profits[k];
+                strcpy(best_name, names[k]);
+            }
+        }
+        printf("%d - %s con unos beneficios netos de %f\n", j+1, best_name, best_profit);
+        for(k=0; k<n_bettor; k++){
+            if(profits[k] == best_profit){
+                profits[k] = INT_MIN;
+            }
+        }
+    }
+    
+    for(k=0; k<n_bettor; k++){
+        free(names[k]);
+    }
+    free(names);
+    free(profits);
 }
 
 
