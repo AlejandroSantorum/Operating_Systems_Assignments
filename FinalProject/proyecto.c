@@ -29,8 +29,8 @@
 #define MIN_BETTOR 10
 #define MAX_WINDOWS 30
 #define MIN_WINDOWS 1
-#define MAX_MONEY 1000000
-#define MIN_MONEY 100
+#define MAX_MONEY 2000
+#define MIN_MONEY 10
 
 #define PROC_MANAGER 0
 #define PROC_BETTOR 1
@@ -171,6 +171,7 @@ int main(int argc, char **argv){
     /* Fin de la comprobacion inicial de errores */
     
     n_proc = n_horses+MIN_PROC;
+    init_syslog();
     
     if(signal(SIGUSR2, handler_SIGUSR2)==SIG_ERR){
         perror("Error estableciendo el nuevo manejador de SIGUSR2 en el proceso principal");
@@ -382,6 +383,7 @@ int main(int argc, char **argv){
     
     while(wait(NULL)>0);
     
+    closelog();
     shmdt(race_control);
     shmctl(memid_race, IPC_RMID, NULL);
     Borrar_Semaforo(semid);
@@ -398,6 +400,7 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
     srand(time(NULL) + getpid());
     
     printf("Abriendo ventanillas e inicilizando apuestas...\n");
+    syslog(LOG_NOTICE, "Abriendo ventanillas e inicilizando apuestas...");
     sleep(2);
     for(j=SECONDS; j>0; j--){
         sleep(1);
@@ -410,6 +413,7 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
         printf("COTIZACIONES ACTUALES DE LOS CABALLOS:\n");
         for(k=0; k<n_horses; k++){
             printf("Cotizacion caballo ID %d = %f\n", k+1, market_rates->horse_rate[k]);
+            syslog(LOG_NOTICE, "Cotizacion caballo ID %d = %f\n", k+1, market_rates->horse_rate[k]);
         }
         if(Up_Semaforo(semid, MARKET_SEM, 0) == ERROR){
             perror("Error levantando el semaforo de las cotizaciones en el monitor");
@@ -424,6 +428,7 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
     printf("\n\t ======================================\n");
     printf("APUESTAS FINALIZADAS. La carrera comenzara en breves instantes");
     printf("\n\t ======================================\n");
+    syslog(LOG_NOTICE, "APUESTAS FINALIZADAS. La carrera comenzara en breves instantes");
     
     kill(getppid(), SIGUSR2); /* Avisa al proceso principal de que las apuestas han finalizado */
         
@@ -448,8 +453,10 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
         for(j=0; j<n_horses; j++){
             if(race_control->position[j]!=LAST){
                 printf("Caballo nº %d en la %dª posicion (casilla nº %d)\n", j+1, race_control->position[j], race_control->current_box[j]);
+                syslog(LOG_NOTICE, "Caballo nº %d en la %dª posicion (casilla nº %d)\n", j+1, race_control->position[j], race_control->current_box[j]);
             }else{
                 printf("Caballo nº %d en la ultima posicion (casilla nº %d)\n", j+1, race_control->current_box[j]);
+                syslog(LOG_NOTICE, "Caballo nº %d en la ultima posicion (casilla nº %d)\n", j+1, race_control->current_box[j]);
             }
         }
         
@@ -458,13 +465,14 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
             Borrar_Semaforo(semid);
             exit(EXIT_FAILURE);
         }
-        
+        usleep(1500000);
         kill(getppid(), SIGUSR2);
     }
     
     printf("\n\t ======================================\n");
     printf("¡CARRERA FINALIZADA!: espere unos instantes mientras calculamos los resultados...");
     printf("\n\t ======================================\n");
+    syslog(LOG_NOTICE, "¡CARRERA FINALIZADA!: espere unos instantes mientras calculamos los resultados...");
     
     sleep(2); /* Csmbiar por 15? */
     
@@ -477,12 +485,15 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
     for(j=0, k=0; j<n_horses; j++){
         if(race_control->position[j] == FIRST){
             printf("El caballo %d ha GANADO LA CARRERA (casilla final = %d)\n", j+1, race_control->current_box[j]);
+            syslog(LOG_NOTICE, "El caballo %d ha GANADO LA CARRERA (casilla final = %d)\n", j+1, race_control->current_box[j]);
             winners[k] = j+1;
             k++;
         }else if(race_control->position[j] == LAST){
             printf("El caballo %d ha terminado ultimo (casilla final = %d)\n", j+1, race_control->current_box[j]);
+            syslog(LOG_NOTICE, "El caballo %d ha terminado ultimo (casilla final = %d)\n", j+1, race_control->current_box[j]);
         }else{
             printf("El caballo %d ha terminado en %dª posicion (casilla final = %d)\n", j+1, race_control->position[j], race_control->current_box[j]);
+            syslog(LOG_NOTICE, "El caballo %d ha terminado en %dª posicion (casilla final = %d)\n", j+1, race_control->position[j], race_control->current_box[j]);
         }
     }
     
@@ -516,6 +527,7 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
         exit(EXIT_FAILURE);
     }
     fprintf(f, "Apostador_ID   N_Ventanilla   Caballo_ID   Cotizacion   Cantidad\n");
+    
     fclose(f);
     
     window_id = (int *) malloc(n_windows*sizeof(int));
@@ -624,7 +636,7 @@ void caballo(int id){
         if(race_control->horses_done == n_horses){
             kill(getppid(), SIGUSR2);
         }
-        
+        usleep(150000);
         if(Up_Semaforo(semid, RACECONTROL_SEM, 0) == ERROR){
             perror("Error levantando el semaforo de control de carrera en un caballo");
             Borrar_Semaforo(semid);
@@ -824,6 +836,7 @@ void calculate_bet_results(int *winners, int n_winners, int n_bettor){
         exit(EXIT_FAILURE);
     }
     fprintf(fbettors, "Nombre_Apostador  Cantidad_Total_Apostada  Ganancias_Totales  Beneficios_Netos\n");
+    syslog(LOG_NOTICE, "Nombre_Apostador  Cantidad_Total_Apostada  Ganancias_Totales  Beneficios_Netos");
     
     for(current_bettor=1; current_bettor<=n_bettor; current_bettor++){
         total_bet=0;
@@ -854,6 +867,7 @@ void calculate_bet_results(int *winners, int n_winners, int n_bettor){
         sprintf(aux, "%d", current_bettor);
         strcat(name, aux);
         fprintf(fbettors, "%s %f %f %f\n", name, total_bet, total_won, profit);
+        syslog(LOG_NOTICE, "%s %f %f %f\n", name, total_bet, total_won, profit);
         fclose(fbets);
     }
     
@@ -911,6 +925,7 @@ void print_best_bettors(int n_bettor){
     fclose(fbettors);
     
     printf("\n\t--> LISTA DE MEJORES APOSTADORES:\n");
+    syslog(LOG_NOTICE, "--> LISTA DE MEJORES APOSTADORES");
     
     for(j=0; j<N_BEST_BETTOR; j++){
         strcpy(best_name, names[0]);
@@ -922,6 +937,7 @@ void print_best_bettors(int n_bettor){
             }
         }
         printf("%d - %s con unos beneficios netos de %f\n", j+1, best_name, best_profit);
+        syslog(LOG_NOTICE, "%d - %s con unos beneficios netos de %f\n", j+1, best_name, best_profit);
         for(k=0; k<n_bettor; k++){
             if(profits[k] == best_profit){
                 profits[k] = INT_MIN;
