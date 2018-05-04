@@ -1,3 +1,13 @@
+/**
+* @brief Proyecto Final
+*
+* Proyecto final de la asignatura de Sistemas Operativos 2018
+* @file proyecto.c
+* @author Alejandro Santorum & David Cabornero (G2202-Pareja7)
+* @version 1.0
+* @date 04-05-2018
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,97 +28,236 @@
 #include "semaforos.h"
 
 
-#define N_ARGS 6
-#define MIN_PROC 3
+#define N_ARGS 6 /*!< Numero de argumentos de entrada */
+#define MIN_PROC 3 /*!< Numero de procesos */
 
-#define MAX_HORSES 10
-#define MIN_HORSES 2
-#define MAX_RACE 200
-#define MIN_RACE 20
-#define MAX_BETTOR 100
-#define MIN_BETTOR 10
-#define MAX_WINDOWS 30
-#define MIN_WINDOWS 1
-#define MAX_MONEY 2000
-#define MIN_MONEY 10
+#define MAX_HORSES 10 /*!< Numero maximo de caballos */
+#define MIN_HORSES 2 /*!< Numero minimo de caballos */
+#define MAX_RACE 200 /*!< Longitud maxima de la carrera */
+#define MIN_RACE 20 /*!< Longitud minima de la carrera */
+#define MAX_BETTOR 100 /*!< Numero maximo de apostadores */
+#define MIN_BETTOR 10 /*!< Numero minimo de apostadores */
+#define MAX_WINDOWS 30 /*!< Numero maximo de ventanillas */
+#define MIN_WINDOWS 1 /*!< Numero minimo de ventanillas */
+#define MAX_MONEY 2000 /*!< Cantidad maxima apostable en una unica apuesta */
+#define MIN_MONEY 10 /*!< Cantidad minima apostable en una unica apuesta */
 
-#define PROC_MANAGER 0
-#define PROC_BETTOR 1
-#define PROC_DISPLAYER 2
+#define PROC_MANAGER 0 /*!< Indice del array de PIDS del proceso manejador de apuestas */
+#define PROC_BETTOR 1 /*!< Indice del array de PIDS del proceso apostador */
+#define PROC_DISPLAYER 2 /*!< Indice del array de PIDS del proceso monitor */
 
-#define SEM_SIZE 3
-#define MARKET_SEM 0
-#define RACECONTROL_SEM 1
-#define FILE_SEM 2
+#define SEM_SIZE 3 /*!< Tamanio del array de semaforos */
+#define MARKET_SEM 0  /*!< Indice del array de semaforos del semaforo que controla el acceso a la zona de memoria compartida de las cotizaciones */
+#define RACECONTROL_SEM 1 /*!< Indice del array de semaforos del semaforo que controla el acceso a la zona de memoria compartida del control de carrera */
+#define FILE_SEM 2 /*!< Indice del array de semaforos del semaforo que controla el acceso a ficheros de texto */
 
-#define FIRST 1
-#define NORMAL 100
-#define LAST -100
+#define FIRST 1 /*!< Primera posicion de la carrera */
+#define NORMAL 100 /*!< Tirada de tipo normal: ni remontadora ni ganadora */
+#define LAST -100 /*!< Ultima posicion de la carrera */
 
-#define PATH "/bin/bash"
-#define BETFILE "apuestas.txt"
-#define BETTORFILE "resultados_apostadores.txt"
-#define ERROR -1
-#define SECONDS 30
-#define NAME_SIZE 20
-#define BUFFER_SIZE 128
-#define N_BEST_BETTOR 10
+#define PATH "/bin/bash" /*!< Directorio de obtenicion de keys */
+#define BETFILE "apuestas.txt" /*!< Fichero de guardado de datos de las apuestas */
+#define BETTORFILE "resultados_apostadores.txt" /*!< Fichero de guardado de datos de los resultadores de las apuestas */
+#define ERROR -1 /*!< Constante de error */
+#define SECONDS 30 /*!< Tiempo (s) de duracion de las apuestas */
+#define NAME_SIZE 20 /*!< Tamanio maximo de los nombres de los apostadores */
+#define BUFFER_SIZE 128 /*!< Tamanio maximo del buffer de lectura */
+#define N_BEST_BETTOR 10 /*!< Numero de mejores apostadores mostrados por pantalla */
 
+/**
+* @brief Estructura de colas de mensajes
+*
+* Esta estructura contiene la informacion necesaria para comunicarse por colas de mensajes
+*/
 struct msgbuf{
-    long mtype; /* type of message */
+    long mtype; /*!< tipo del mensaje */
     struct{
         struct{
-            char name[NAME_SIZE];
-            int bettor_id;
-            int horse_id;
-            float bet;
-        }betting;
+            char name[NAME_SIZE]; /*!< nombre apostador */
+            int bettor_id; /*!< ID apostador */
+            int horse_id; /*!< ID caballo */
+            float bet; /*!< cantidad apostada */
+        }betting; /*!< Informacion de apuestas */
         struct{
-            int position;
-            int last_throw;
+            int position; /*!< posicion */
+            int last_throw; /*!< ultima tirada */
         }race;
-    }info; /* information of message */
+    }info; /*!< Informacion de control de carrera */
 };
 
+/**
+* @brief Estructura de memoria compartida de cotizaciones
+*
+* Esta estructura contiene la informacion de las cotizaciones en la etapa de apuestas
+*/
 typedef struct{
-    float horse_bet[MAX_HORSES];
-    float horse_rate[MAX_HORSES];
-    float total;
+    float horse_bet[MAX_HORSES]; /*!< Apuestas totoles a cada caballo */
+    float horse_rate[MAX_HORSES]; /*!< Cotizacion de cada caballo */
+    float total; /*!< Cantidad total apostada */
 }market_rates_struct;
 
+/**
+* @brief Estructura de memoria compartida de control de carrera
+*
+* Esta estructura contiene la informacion del control de carrera de los caballos
+*/
 typedef struct{
-    int position[MAX_HORSES];
-    int last_throw[MAX_HORSES];
-    int current_box[MAX_HORSES];
-    int horses_done;
+    int position[MAX_HORSES]; /*!< Posicion de cada caballo */
+    int last_throw[MAX_HORSES]; /*!< Ultima tirada de cada caballo */
+    int current_box[MAX_HORSES]; /*!< Casilla actual de cada caballo */
+    int horses_done; /*!< Numero de caballos que ya han tirado en el turno actual */
 }race_control_struct;
 
 
-void init_syslog(){
-    setlogmask (LOG_UPTO (LOG_NOTICE));
-    openlog ("Proyecto_final_SOPER_logger", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
-}
+/**
+* @brief inicializa syslog
+* @return void.
+*/
+void init_syslog();
+
+/**
+* @brief comprueba si una cadena de caracteres es un numero
+*
+* @param input - cadena de caracteres
+* @return 1 en caso de que sea un numero. 0 en caso contrario
+*/
 int is_valid_integer(char *input);
+
+/**
+* @brief devuelve un numero entero aleatorio en el intervalo (limites incluidos)
+*
+* @param inf - limite inferior intervalo
+* @param sup - limite superior intervalo
+* @return entero aleatorio en el intervalo. Corta ejecucion en caso de error.
+*/
 int aleat_num(int inf, int sup);
+
+/**
+* @brief devuelve un numero decimal aleatorio en el intervalo (limites incluidos)
+*
+* @param inf - limite inferior intervalo
+* @param sup - limite superior intervalo
+* @return entero aleatorio en el intervalo.
+*/
 float float_rand( float min, float max );
-void* window_function(void* arg);
+
+/**
+* @brief nuevo manejador de la señal SIGUSR1 para el proceso apostador.
+* Su funcionalidad es simplemente obligar al proceso a no ignorar la señal.
+* Ademas, pone la variable global de control del apostador a 1
+*
+* @param sig - la señal que utilizará este manejador cuando sea llamada
+* @return void.
+*/
 void handler_SIGUSR1_bettor(int sig);
+
+/**
+* @brief nuevo manejador de la señal SIGUSR2.
+* Su funcionalidad es simplemente obligar al proceso a no ignorar la señal.
+*
+* @param sig - la señal que utilizará este manejador cuando sea llamada
+* @return void.
+*/
 void handler_SIGUSR2(int sig);
+
+/**
+* @brief funcion que implementa la funcionalidad del proceso monitor
+*
+* @param bettor_process_pid - id del proceso apostador
+* @param betting_manager_process_pid - id del proceso manejador de apuestas
+* @param len_race - longitud de la carrera
+* @param n_bettor - numero de apostadores
+* @return void.
+*/
 void displayer_process(int bettor_process_pid, int betting_manager_process_pid, int len_race, int n_bettor);
+
+/**
+* @brief funcion que implementa la funcionalidad del proceso manejador de apuestas
+*
+* @param n_horses - numero de caballos
+* @param n_bettor - numero de apostadores
+* @param n_windows - numero de vetanillas
+* @return void.
+*/
 void betting_manager_process(int n_horses, int n_bettor, int n_windows);
+
+/**
+* @brief funcion que implementa la funcionalidad del proceso apostador
+*
+* @param n_horses - numero de caballos
+* @param n_bettor - numero de apostadores
+* @param money - cantidad maxima apostadble por apuesta
+* @return void.
+*/
 void bettor_process(int n_horses, int n_bettor, int money);
+
+/**
+* @brief funcion que implementa la funcionalidad del proceso caballo
+*
+* @return void.
+*/
 void caballo();
+
+/**
+* @brief funcion que implementa la funcionalidad de las ventanillas
+* 
+* @param arg - puntero a estructura de informacion
+* @return void*.
+*/
+void* window_function(void* arg);
+
+/**
+* @brief funcion que asigna a cada caballo su posicion en el ranking actual
+* 
+* @param current - array de enteros que se corresponden con la casilla actual de cada caballo
+* @param position - array de enteros en el que se devuelven las posiciones de los caballos actuales
+* @param len - longitud de los arrays
+* @return void.
+*/
 void classification(int *current, int *position, int len);
+
+/**
+* @brief funcion auxiliar de la funcion classification que se encarga de comprobar si todos los caballos han sido clasificados
+* 
+* @param current - array de enteros que se corresponden con la casilla de cada caballo, o -1 si ya ha sido clasificado
+* @param len - longitud del array
+* @return 1 si ya han sido todos clasificados o 0 en caso contrario.
+*/
 int checked(int *array, int len);
+
+/**
+* @brief funcion auxiliar que se encarga de comprobar si la carrera ha finalizado
+* 
+* @param current - array de enteros que se corresponden con la casilla de cada caballo, o -1 si ya ha sido clasificado
+* @param len - longitud del array
+* @param racelen - longitud total de la carrera
+* @return 1 si ya han sido todos clasificados o 0 en caso contrario.
+*/
 int finished(int *array, int len, int racelen);
+
+/**
+* @brief funcion que calcula los resultados de las apuestas y los escribe en un fichero
+* 
+* @param winners - array de IDs de los caballos ganadores de la carrera
+* @param n_winners - numero de ganadores (tamaño del array winners)
+* @param n_bettor - numero de apostadores
+* @return void
+*/
 void calculate_bet_results(int *winners, int n_winners, int n_bettor);
+
+/**
+* @brief funcion que calcula los mejores apostadores y los muestra por pantalla
+* 
+* @param n_bettor - numero de apostadores
+* @return void
+*/
 void print_best_bettors(int n_bettor);
 
 
 int semid, msgid, memid_market, memid_race;
 int n_horses, n_proc;
 int flag_bettor=0;
-int *pids=NULL;
+int *pids=NULL; 
 market_rates_struct *market_rates=NULL; /* Cotizaciones de los caballos */
 race_control_struct *race_control=NULL; /* Estructura de control de carrera */
 
@@ -507,6 +656,7 @@ void displayer_process(int bettor_process_pid, int betting_manager_process_pid, 
 
 void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     pthread_t *thr=NULL;
+    pthread_attr_t attr;
     int *window_id=NULL;
     int j;
     FILE *f=NULL;
@@ -530,6 +680,9 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     
     fclose(f);
     
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    
     window_id = (int *) malloc(n_windows*sizeof(int));
     if(!window_id){
         perror("Error reservando memoria para el array de ids de las ventanillas");
@@ -544,7 +697,7 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     }
     for(j=0; j<n_windows; j++){
         window_id[j] = j;
-        if(pthread_create(&thr[j], NULL, window_function, (void *) &window_id[j])!= 0){
+        if(pthread_create(&thr[j], &attr, window_function, (void *) &window_id[j])!= 0){
             free(thr);
             free(window_id);
             perror("Error en la creación de los hilos ventanilla");
@@ -555,9 +708,10 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     pause(); /* Esperando a que comience la carrera para terminar con los apuestas */
     
     for(j=0; j<n_windows; j++){ /* Las ventanillas no recogen mas apuestas */
-        pthread_kill(thr[j], SIGINT); /* Finalizamos la ejecucion de los hilos */
+        pthread_cancel(thr[j]);
     }
     free(window_id);
+    free(thr);
     
     exit(EXIT_SUCCESS);
 }
@@ -995,4 +1149,9 @@ int aleat_num(int inf, int sup){
 float float_rand( float min, float max ){
     float scale = rand() / (float) RAND_MAX; /* [0, 1.0] */
     return min + scale * ( max - min );      /* [min, max] */
+}
+
+void init_syslog(){
+    setlogmask (LOG_UPTO (LOG_NOTICE));
+    openlog ("Proyecto_final_SOPER_logger", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
 }
