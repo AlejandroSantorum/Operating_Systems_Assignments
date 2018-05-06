@@ -196,7 +196,7 @@ void bettor_process(int n_horses, int n_bettor, int money);
 *
 * @return void.
 */
-void caballo();
+void horse();
 
 /**
 * @brief funcion que implementa la funcionalidad de las ventanillas
@@ -254,12 +254,12 @@ void calculate_bet_results(int *winners, int n_winners, int n_bettor);
 void print_best_bettors(int n_bettor);
 
 
-int semid, msgid, memid_market, memid_race;
-int n_horses, n_proc;
-int flag_bettor=0;
-int *pids=NULL; 
-market_rates_struct *market_rates=NULL; /* Cotizaciones de los caballos */
-race_control_struct *race_control=NULL; /* Estructura de control de carrera */
+int semid, msgid, memid_market, memid_race; /** Variables invariantes a lo largo del programa y de interes comun */
+int n_horses, n_proc; /** Paramentros de entrada necesitados en handlers */
+int flag_bettor=0, flag_window=0; /** Flags variables para hilos, handlers y proceso apostador */
+int *pids=NULL; /** IDS de todos los procesos para poder acabar su ejecución en el caso de que se utilice CTRL+C */
+market_rates_struct *market_rates=NULL; /** Cotizaciones de los caballos */
+race_control_struct *race_control=NULL; /** Estructura de control de carrera */
 
 int main(int argc, char **argv){
     int len_race, n_bettor, n_windows, money;
@@ -465,7 +465,7 @@ int main(int argc, char **argv){
     }else if(i==PROC_BETTOR){
         bettor_process(n_horses, n_bettor, money);
     }else if(i>PROC_DISPLAYER && i<n_proc){
-        caballo(i-PROC_DISPLAYER);
+        horse(i-PROC_DISPLAYER);
     }else{/* Proceso padre*/
         if(signal(SIGINT, handler_SIGINT)==SIG_ERR){
             perror("Error estableciendo el nuevo manejador de SIGINT en el proceso principal");
@@ -706,9 +706,9 @@ void betting_manager_process(int n_horses, int n_bettor, int n_windows){
     }
     
     pause(); /* Esperando a que comience la carrera para terminar con los apuestas */
-    
-    for(j=0; j<n_windows; j++){ /* Las ventanillas no recogen mas apuestas */
-        pthread_cancel(thr[j]);
+    flag_window = 1; /* Carrera iniciada, apuestas finalizadas, ventanillas cerradas */
+    for(j=0; j<n_windows; j++){
+        pthread_join(thr[j], NULL);
     }
     free(window_id);
     free(thr);
@@ -724,7 +724,7 @@ void bettor_process(int n_horses, int n_bettor, int money){
     float rand_bet;
     char aux[NAME_SIZE];
     
-    srand(time(NULL) + getpid());
+    srand(time(NULL) + getpid()); /* Semilla de generacion de numeros aleatorios distinta al resto de procesos */
     
     if(signal(SIGUSR1, handler_SIGUSR1_bettor)==SIG_ERR){
         perror("Error estableciendo el nuevo manejador de SIGUSR1 en el proceso apostador");
@@ -760,7 +760,7 @@ void bettor_process(int n_horses, int n_bettor, int money){
     exit(EXIT_SUCCESS);
 }
 
-void caballo(int id){
+void horse(int id){
     int the_throw=-1, last1, last2;
     
     srand(time(NULL) + getpid());
@@ -834,7 +834,7 @@ void* window_function(void* arg){
     
     srand(time(NULL) + getpid());
     
-    while(1){
+    while(!flag_window){
         usleep(300000);
         if(msgrcv(msgid, (struct msgbuf *)&rcv, sizeof(rcv.info), 1, 0) == ERROR){
             if(errno == EIDRM || errno == EINTR){ /* Las apuestas han acabado */
